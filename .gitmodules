@@ -1,0 +1,12 @@
+# Fichiers système
+__pycache__/
+*.py[cod]
+.env
+.venv/
+node_modules/
+.svelte-kit/
+dist/
+.DS_Store
+# Fichiers Docker
+docker-data/
+*.db

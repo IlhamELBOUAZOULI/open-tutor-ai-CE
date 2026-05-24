@@ -12,8 +12,6 @@ services:
     ports:
       - "8080:8080"
     working_dir: /app/backend
-    volumes:
-      - .:/app
     env_file:
       - .env
     environment:
@@ -50,6 +48,6 @@ services:
     command: npm run dev
     depends_on:
       open-tutor-backend:
-        condition: service_healthy
+        condition: service_started
     networks:
       - app-network

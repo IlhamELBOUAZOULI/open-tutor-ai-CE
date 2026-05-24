@@ -1,22 +1,14 @@
 """
 Database module for OpenTutorAI
-
-This module defines the database tables specific to OpenTutorAI while using
-the same database connection as OpenWebUI to maintain compatibility.
 """
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean, func, ARRAY
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean, func
 from sqlalchemy.orm import relationship
 from open_webui.internal.db import Base, get_db, JSONField
 
 PREFIX = "opentutorai_"
 
 class Support(Base):
-    """
-    Table for storing student support requests.
-    Each support request is linked to a chat in the Open WebUI chat table.
-    """
     __tablename__ = f"{PREFIX}support"
-    
     id = Column(String, primary_key=True, index=True)
     user_id = Column(String, index=True, nullable=False)
     title = Column(String, nullable=False)
@@ -38,18 +30,10 @@ class Support(Base):
     created_at = Column(DateTime, nullable=False, server_default=func.now())
     updated_at = Column(DateTime, nullable=True, onupdate=func.now())
     meta_data = Column(JSONField, nullable=True)
-    
     chat_id = Column(String, ForeignKey("chat.id", ondelete="CASCADE"), index=True, nullable=True)
-    
-    def __repr__(self):
-        return f"<Support(id={self.id}, user_id={self.user_id}, title={self.title})>"
 
 class SupportFile(Base):
-    """
-    Table for storing files attached to support requests.
-    """
     __tablename__ = f"{PREFIX}support_file"
-    
     id = Column(String, primary_key=True, index=True)
     support_id = Column(String, ForeignKey(f"{PREFIX}support.id", ondelete="CASCADE"), nullable=False)
     filename = Column(String, nullable=False)
@@ -57,23 +41,75 @@ class SupportFile(Base):
     file_type = Column(String, nullable=True)
     file_size = Column(Integer, nullable=True)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
-    
     support = relationship("Support", backref="files")
-    
-    def __repr__(self):
-        return f"<SupportFile(id={self.id}, support_id={self.support_id}, filename={self.filename})>"
+
+class Assignment(Base):
+    __tablename__ = f"{PREFIX}assignment"
+    id = Column(String, primary_key=True)
+    teacher_id = Column(String, nullable=False, index=True)
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    course = Column(String, nullable=True)
+    course_id = Column(String, nullable=True)
+    course_color = Column(String, nullable=True)
+    due_date = Column(String, nullable=False)
+    due_time = Column(String, nullable=True, default="23:59")
+    points = Column(Integer, nullable=True, default=100)
+    status = Column(String, nullable=True, default="active")
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, nullable=True, onupdate=func.now())
+
+class Submission(Base):
+    __tablename__ = f"{PREFIX}submission"
+    id = Column(String, primary_key=True)
+    assignment_id = Column(String, ForeignKey(f"{PREFIX}assignment.id", ondelete="CASCADE"), nullable=False, index=True)
+    student_id = Column(String, nullable=False, index=True)
+    student_name = Column(String, nullable=True)
+    student_email = Column(String, nullable=True)
+    content = Column(Text, nullable=True)
+    file_ids = Column(JSONField, nullable=True)
+    status = Column(String, nullable=True, default="submitted")
+    grade = Column(String, nullable=True)
+    feedback = Column(Text, nullable=True)
+    submitted_at = Column(DateTime, server_default=func.now())
+    graded_at = Column(DateTime, nullable=True)
+
+class TeacherClassroom(Base):
+    __tablename__ = f"{PREFIX}teacher_classroom"
+    id = Column(String, primary_key=True)
+    teacher_id = Column(String, nullable=False, index=True)
+    class_code = Column(String, nullable=False, unique=True, index=True)
+    name = Column(String, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+class ClassroomEnrollment(Base):
+    __tablename__ = f"{PREFIX}classroom_enrollment"
+    id = Column(String, primary_key=True)
+    classroom_id = Column(String, ForeignKey(f"{PREFIX}teacher_classroom.id", ondelete="CASCADE"), nullable=False, index=True)
+    student_id = Column(String, nullable=False, index=True)
+    enrolled_at = Column(DateTime, server_default=func.now())
+
+class TeacherSettings(Base):
+    __tablename__ = f"{PREFIX}teacher_settings"
+    id = Column(String, primary_key=True)
+    teacher_id = Column(String, nullable=False, unique=True, index=True)
+    language = Column(String, nullable=True, default="fr")
+    timezone = Column(String, nullable=True, default="UTC")
+    notifications_enabled = Column(Boolean, nullable=True, default=True)
+    email_notifications = Column(Boolean, nullable=True, default=True)
+    theme = Column(String, nullable=True, default="light")
+    updated_at = Column(DateTime, nullable=True, onupdate=func.now())
+
+class ClassroomKnowledge(Base):
+    __tablename__ = f"{PREFIX}classroom_knowledge"
+    id = Column(String, primary_key=True)
+    classroom_id = Column(String, ForeignKey(f"{PREFIX}teacher_classroom.id", ondelete="CASCADE"), nullable=False, index=True)
+    knowledge_id = Column(String, nullable=False)
+    knowledge_name = Column(String, nullable=True)
+    shared_at = Column(DateTime, server_default=func.now())
 
 def init_database():
-    """
-    Initialize the database tables for OpenTutorAI.
-    Call this function when your app starts to ensure all tables exist.
-    
-    This is safe to call even if tables already exist, as SQLAlchemy's
-    create_all() only creates tables that don't exist yet.
-    """
     from open_webui.internal.db import engine
-    
     Base.metadata.create_all(bind=engine, checkfirst=True)
     print("OpenTutorAI database tables initialized successfully")
-    
     return engine

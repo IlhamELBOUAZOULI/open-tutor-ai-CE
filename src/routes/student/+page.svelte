@@ -3,7 +3,8 @@
 	import { user } from '$lib/stores';
   import { onMount, getContext } from 'svelte';
 
-
+let courses = [];
+try { courses = await apiFetch('/api/v1/courses'); } catch { courses = []; }
 	let loading = true;
 	let error = null;
   const i18n = getContext('i18n');

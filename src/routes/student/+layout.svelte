@@ -15,9 +15,11 @@
 	let isSidebarOpen = true;
 	let username = '';
 
+	// Check if current page is the dashboard (no blue layout on dashboard)
+	$: isDashboardPage = $page.url.pathname === '/student/dashboard' || $page.url.pathname === '/student';
+
 	// Extract first name from user's full name
 	$: if ($user && $user.name) {
-		// Split the name and get the first part as the first name
 		username = $user.name.split(' ')[0];
 	}
 
@@ -99,57 +101,62 @@
 	});
 </script>
 
-<div
-	class="flex h-screen overflow-hidden bg-[#F4F7FE] dark:bg-gray-900 transition-colors duration-200 ease-in-out"
->
-	<!-- Sidebar with adaptive behavior -->
-	<div class={`sidebar-container ${isSidebarOpen ? '' : 'collapsed'}`}>
-		<Sidebar {isSidebarOpen} {activePage} isDarkMode={currentIsDarkMode} />
-	</div>
+<!-- Dashboard page: affiche juste le contenu sans sidebar/navbar bleue -->
+{#if isDashboardPage}
+	<slot />
 
-	<!-- Main content area with navbar and slot -->
-	<div class="flex-1 flex flex-col overflow-hidden relative z-10 bg-[#F4F7FE] dark:bg-gray-900">
-		<Navbar
-			{username}
-			{toggleSidebar}
-			isDarkMode={currentIsDarkMode}
-			on:darkModeToggle={toggleDarkMode}
-		/>
-
-		<!-- Main content with proper scrolling -->
-		<div
-			class="flex-1 overflow-y-auto p-4 md:p-6 bg-[#F4F7FE] dark:bg-gray-900 text-gray-800 dark:text-gray-100"
-		>
-			<slot />
+<!-- Autres pages student: affiche la sidebar et navbar bleues normalement -->
+{:else}
+	<div
+		class="flex h-screen overflow-hidden bg-[#F4F7FE] dark:bg-gray-900 transition-colors duration-200 ease-in-out"
+	>
+		<!-- Sidebar with adaptive behavior -->
+		<div class={`sidebar-container ${isSidebarOpen ? '' : 'collapsed'}`}>
+			<Sidebar {isSidebarOpen} {activePage} isDarkMode={currentIsDarkMode} />
 		</div>
-	</div>
 
-	<!-- Mobile sidebar overlay when open on mobile - lower z-index than content -->
-	{#if isMobile && isSidebarOpen}
-		<div
-			class="fixed inset-0 bg-black bg-opacity-70 z-5"
-			on:click={() => {
-				isSidebarOpen = false;
-			}}
-			aria-hidden="true"
-		></div>
-	{/if}
-</div>
+		<!-- Main content area with navbar and slot -->
+		<div class="flex-1 flex flex-col overflow-hidden relative z-10 bg-[#F4F7FE] dark:bg-gray-900">
+			<Navbar
+				{username}
+				{toggleSidebar}
+				isDarkMode={currentIsDarkMode}
+				on:darkModeToggle={toggleDarkMode}
+			/>
+
+			<!-- Main content with proper scrolling -->
+			<div
+				class="flex-1 overflow-y-auto p-4 md:p-6 bg-[#F4F7FE] dark:bg-gray-900 text-gray-800 dark:text-gray-100"
+			>
+				<slot />
+			</div>
+		</div>
+
+		<!-- Mobile sidebar overlay when open on mobile -->
+		{#if isMobile && isSidebarOpen}
+			<div
+				class="fixed inset-0 bg-black bg-opacity-70 z-5"
+				on:click={() => {
+					isSidebarOpen = false;
+				}}
+				aria-hidden="true"
+			></div>
+		{/if}
+	</div>
+{/if}
 
 <style>
-	/* Add this to ensure nested layouts work properly */
 	:global(.flex-1) {
-		min-height: 0; /* This is crucial for proper flex behavior */
+		min-height: 0;
 	}
 
-	/* Make sure content containers have proper layout */
 	:global(#chat-container) {
 		display: flex;
 		flex-direction: column;
 		height: 100%;
 		overflow: hidden;
 	}
-	/* Base styles */
+
 	:global(body, html) {
 		height: 100%;
 		margin: 0;
@@ -159,7 +166,6 @@
 			'Open Sans', 'Helvetica Neue', sans-serif;
 	}
 
-	/* Add dark mode transition for smoother theme switching */
 	:global(body),
 	:global(body *) {
 		transition:
@@ -167,7 +173,6 @@
 			color 0.3s ease;
 	}
 
-	/* Ensure proper contrast in dark mode */
 	:global(.dark) {
 		color-scheme: dark;
 	}
@@ -176,17 +181,15 @@
 		outline-color: #60a5fa;
 	}
 
-	/* Sidebar container responsive styles */
 	.sidebar-container {
 		transition: all 0.3s ease;
 		z-index: 20;
 	}
 
 	.sidebar-container.collapsed {
-		margin-left: -256px; /* Match sidebar width when closed */
+		margin-left: -256px;
 	}
 
-	/* Mobile styles */
 	@media (max-width: 767px) {
 		.sidebar-container {
 			position: fixed;
@@ -195,11 +198,10 @@
 		}
 
 		.sidebar-container.collapsed {
-			margin-left: -100%; /* Fully hide on mobile */
+			margin-left: -100%;
 		}
 	}
 
-	/* Tablet adjustments */
 	@media (min-width: 768px) and (max-width: 1023px) {
 		.sidebar-container:not(.collapsed) {
 			width: auto;
