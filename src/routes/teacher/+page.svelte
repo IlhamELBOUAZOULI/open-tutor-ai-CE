@@ -28,6 +28,11 @@
   let selectedFile = null;
   let filterModule = 'all';
 
+  // ── Quiz State ────────────────────────────────────────────────────────────
+  let selectedQuizForSubmissions = null;
+  let quizSubmissions = [];
+  let teacherQuizList = [];
+
   let form = { title: '', description: '', course: '', due_date: '', due_time: '23:59', points: 100 };
   let courseForm = { title: '', description: '', module: '' };
 
@@ -67,6 +72,7 @@
     try { classroom = await apiFetch('/api/v1/classroom'); } catch { classroom = null; }
     try { courses = await apiFetch('/api/v1/courses'); } catch { courses = []; }
     await checkAllIndexed();
+    await loadTeacherQuizzes();
     loading = false;
   }
 
@@ -120,71 +126,25 @@
   }
 
   // ── Quiz Generator ─────────────────────────────────────────────────────────
-  async function generateQuiz(course) {
-    if (!indexedCourses[course.id]) {
-      alert('Ce cours doit être indexé avant de générer un QCM. Cliquez sur "Indexer" d\'abord.');
-      return;
-    }
-    generatingQuiz = { ...generatingQuiz, [course.id]: true };
-    try {
-      const t = getToken();
-      // Appel au endpoint RAG chat pour générer le QCM
-      const res = await fetch(`${API}/api/v1/courses/${course.id}/chat`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(t ? { Authorization: `Bearer ${t}` } : {})
-        },
-        body: JSON.stringify({
-          question: `Génère exactement 10 questions QCM à partir de ce cours. 
-Pour chaque question, utilise ce format JSON strict:
-{
-  "questions": [
-    {
-      "question": "texte de la question",
-      "options": ["A) option1", "B) option2", "C) option3", "D) option4"],
-      "correct": "A",
-      "explanation": "explication courte"
-    }
-  ]
-}
-Réponds UNIQUEMENT avec le JSON, sans texte avant ou après.`,
-          history: []
-        })
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json();
-
-      // Parser la réponse JSON du LLM
-      let quizData;
-      try {
-        const answer = data.answer;
-        const jsonMatch = answer.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          quizData = JSON.parse(jsonMatch[0]);
-        } else {
-          throw new Error('Format JSON invalide');
-        }
-      } catch(parseErr) {
-        // Fallback: créer des questions basiques si le parsing échoue
-        quizData = {
-          questions: [{
-            question: "Le cours a été analysé mais le format QCM n'a pas pu être généré. Essayez avec un cours plus détaillé.",
-            options: ["A) Oui", "B) Non", "C) Peut-être", "D) Je ne sais pas"],
-            correct: "A",
-            explanation: "Réponse par défaut"
-          }]
-        };
-      }
-
-      currentQuiz = { ...quizData, courseTitle: course.title, courseId: course.id };
-      showQuizModal = true;
-      showSuccess('QCM généré avec succès !');
-    } catch(e) {
-      alert('Erreur génération QCM: ' + e.message);
-    }
+async function generateQuiz(course) {
+  generatingQuiz = { ...generatingQuiz, [course.id]: true };
+  try {
+    const t = getToken();
+    const res = await fetch(`/api/v1/chat/quiz/${course.id}`, {
+      method: 'POST',
+      headers: { ...(t ? { Authorization: `Bearer ${t}` } : {}) }
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    currentQuiz = { ...data, courseTitle: course.title, courseId: course.id };
+    showQuizModal = true;
+    showSuccess('QCM généré avec succès !');
+  } catch(e) {
+    alert('Erreur génération QCM: ' + e.message);
+  } finally {
     generatingQuiz = { ...generatingQuiz, [course.id]: false };
   }
+}
 
   function exportQuizText(quiz) {
     let text = `QCM — ${quiz.courseTitle}\n${'='.repeat(50)}\n\n`;
@@ -200,6 +160,42 @@ Réponds UNIQUEMENT avec le JSON, sans texte avant ou après.`,
     a.download = `QCM_${quiz.courseTitle.replace(/\s+/g, '_')}.txt`;
     a.click();
     URL.revokeObjectURL(a.href);
+  }
+
+  // ── Quiz Teacher Management ───────────────────────────────────────────────
+  async function loadTeacherQuizzes() {
+    try {
+      const res = await fetch('/api/v1/quizzes');
+      if (res.ok) teacherQuizList = await res.json();
+    } catch { teacherQuizList = []; }
+  }
+
+  async function viewQuizSubmissions(quizId) {
+    selectedQuizForSubmissions = quizId;
+    try {
+      const res = await fetch(`/api/v1/quizzes/${quizId}/submissions`);
+      if (res.ok) {
+        const data = await res.json();
+        quizSubmissions = data.submissions;
+      }
+    } catch { quizSubmissions = []; }
+  }
+
+  async function updateQuizNote(subId, newNote, quizId) {
+    const res = await fetch(`/api/v1/quizzes/${quizId}/submissions/${subId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ai_note: parseInt(newNote) })
+    });
+    if (res.ok) await viewQuizSubmissions(quizId);
+  }
+
+  async function publishQuiz(quizId) {
+    const res = await fetch(`/api/v1/quizzes/${quizId}/publish`, { method: 'PUT' });
+    if (res.ok) {
+      await loadTeacherQuizzes();
+      showSuccess('Quiz publié !');
+    }
   }
 
   // ── Assignments ────────────────────────────────────────────────────────────
@@ -335,7 +331,467 @@ Réponds UNIQUEMENT avec le JSON, sans texte avant ou après.`,
     if ($user.role !== 'teacher' && $user.role !== 'admin') { goto(`/${$user.role}`); return; }
     await loadAll();
   });
+
+    // ── Sauvegarder et Publier le Quiz ───────────────────────────────────────
+ async function saveAndPublishQuiz(quiz) {
+  try {
+    const t = getToken();
+    // 1. Créer le quiz
+    const res = await fetch(`${API}/api/v1/quizzes`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(t ? { Authorization: `Bearer ${t}` } : {})
+      },
+      body: JSON.stringify({
+        title: `QCM — ${quiz.courseTitle}`,
+        course_id: quiz.courseId || null,
+        course_title: quiz.courseTitle,
+        questions: quiz.questions,
+        status: 'published'   // ← publier directement
+      })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+
+    // 2. Recharger la liste des quiz
+    await loadTeacherQuizzes();
+
+    showQuizModal = false;
+    currentQuiz = null;
+    showSuccess(`✅ Quiz publié ! Les étudiants peuvent y répondre.`);
+  } catch(e) {
+    alert('Erreur publication: ' + e.message);
+  }
+}
 </script>
+
+<div class="layout">
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    
+    <!-- LOGO CORRIGÉ : OT + Open TutorAI côte à côte -->
+    <div class="logo" style="display:flex;align-items:center;gap:10px;padding:20px 24px;border-bottom:1px solid #e2e8f0;">
+         <div class="header-logo">
+  <img src="/favicon.png" alt="Open TutorAI" class="logo-img" />
+</div>
+      
+      <span style="font-size:1.15rem;font-weight:400;color:#0f172a;letter-spacing:-0.2px;white-space:nowrap;">Open <strong style="font-weight:700;">TutorAI</strong></span>
+    </div>
+
+    {#if $user}
+      <div class="sidebar-user">
+        <div class="user-avatar">{($user.name||'P')[0].toUpperCase()}</div>
+        <div>
+          <div class="user-name">{$user.name}</div>
+          <div class="user-role">Enseignant</div>
+        </div>
+      </div>
+    {/if}
+    <nav class="nav">
+      {#each [
+        { id:'assignments', icon:'📋', label:'Devoirs',   count: assignments.length },
+        { id:'courses',     icon:'📚', label:'Cours',     count: courses.length },
+        { id:'students',    icon:'👥', label:'Étudiants', count: students.length },
+        { id:'quizzes',     icon:'📝', label:'Quiz',      count: teacherQuizList.length },
+        { id:'classroom',   icon:'🏫', label:'Ma Classe', count: null },
+      ] as tab}
+        <div class="nav-item {activeTab===tab.id?'active':''}" on:click={() => activeTab=tab.id} role="button" tabindex="0">
+          <span>{tab.icon}</span><span>{tab.label}</span>
+          {#if tab.count !== null && tab.count > 0}<span class="nav-badge">{tab.count}</span>{/if}
+        </div>
+      {/each}
+    </nav>
+  </aside>
+
+  <!-- Main -->
+  <div class="main">
+    <div class="topbar">
+      <div>
+        <div class="page-title">
+          {activeTab==='assignments'?'📋 Devoirs':activeTab==='courses'?'📚 Cours':activeTab==='students'?'👥 Étudiants':activeTab==='quizzes'?'📝 Quiz':'🏫 Ma Classe'}
+        </div>
+        <div class="page-sub">
+          {activeTab==='assignments'?`${assignments.length} devoir(s)`:activeTab==='courses'?`${courses.length} cours`:activeTab==='students'?`${students.length} étudiant(s)`:activeTab==='quizzes'?`${teacherQuizList.length} quiz`:classroom?`Code : ${classroom.class_code}`:''}
+        </div>
+      </div>
+      
+            <div>
+        {#if activeTab==='assignments'}<button class="btn-primary" on:click={openCreate}>+ Nouveau devoir</button>
+        {:else if activeTab==='courses'}<button class="btn-primary" on:click={openCreateCourse}>+ Nouveau cours</button>
+        {:else if activeTab==='classroom'}<button class="btn" on:click={regenerateCode}>🔄 Nouveau code</button>
+        {/if}
+      </div>
+
+    </div>
+
+    <div class="content">
+      {#if loading}
+        <div class="spin"><div class="spinner"></div> Chargement...</div>
+
+      {:else if activeTab==='assignments'}
+        <div class="stats">
+          {#each [
+            {icon:'📋',bg:'#eef2ff',val:assignments.length,lbl:'Total'},
+            {icon:'✅',bg:'#f0fdf4',val:assignments.filter(a=>a.status==='active').length,lbl:'Actifs'},
+            {icon:'📨',bg:'#fff7ed',val:assignments.reduce((s,a)=>s+(a.submission_count||0),0),lbl:'Soumissions'},
+            {icon:'👥',bg:'#f0f9ff',val:students.length,lbl:'Étudiants'},
+          ] as s}
+            <div class="stat-card">
+              <div class="stat-icon" style="background:{s.bg}">{s.icon}</div>
+              <div><div class="stat-val">{s.val}</div><div class="stat-lbl">{s.lbl}</div></div>
+            </div>
+          {/each}
+        </div>
+        {#if assignments.length===0}
+          <div class="empty"><div style="font-size:48px">📋</div><p style="margin-top:12px">Aucun devoir. Créez votre premier devoir !</p></div>
+        {:else}
+          {#each assignments as a}
+            {@const d=formatDeadline(a.due_date)}
+            <div class="devoir-card">
+              <div class="devoir-icon">📋</div>
+              <div class="devoir-info">
+                <div class="devoir-title">{a.title}</div>
+                <div class="devoir-meta">
+                  {#if a.course}<span>📚 {a.course}</span>{/if}
+                  <span>📅 {a.due_date} à {a.due_time}</span>
+                  <span>⭐ {a.points} pts</span>
+                  <span>📨 {a.submission_count||0} soumissions</span>
+                </div>
+              </div>
+              <span class="badge" style="background:{d.bg};color:{d.color}">{d.label}</span>
+              <span class="badge {a.status==='active'?'badge-active':''}">{a.status==='active'?'Actif':'Fermé'}</span>
+              <div style="display:flex;gap:6px">
+                <button class="btn" on:click={() => openEdit(a)}>✏️</button>
+                <button class="btn btn-danger" on:click={() => deleteAssignment(a.id)}>🗑️</button>
+              </div>
+            </div>
+          {/each}
+        {/if}
+
+      {:else if activeTab==='courses'}
+        {#if courses.length>0}
+          <div class="filter-bar">
+            <button class="filter-btn {filterModule==='all'?'active':''}" on:click={()=>filterModule='all'}>Tous ({courses.length})</button>
+            {#each uniqueModules as m}
+              <button class="filter-btn {filterModule===m?'active':''}" on:click={()=>filterModule=m}>{m}</button>
+            {/each}
+          </div>
+        {/if}
+        {#if filteredCourses.length===0}
+          <div class="empty"><div style="font-size:48px">📚</div><p style="margin-top:12px">Aucun cours. Créez votre premier cours !</p></div>
+        {:else}
+          <div class="courses-grid">
+            {#each filteredCourses as c}
+              <div class="course-card">
+                <div style="display:flex;align-items:flex-start;justify-content:space-between">
+                  <span style="font-size:2.2rem">{fileIcon(c.file_type)}</span>
+                  <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px">
+                    <span class="badge badge-module">{c.module}</span>
+                    {#if indexedCourses[c.id]}
+                      <span class="badge badge-indexed">🤖 Indexé</span>
+                    {:else}
+                      <span class="badge badge-pending">⚠️ Non indexé</span>
+                    {/if}
+                  </div>
+                </div>
+                <div class="course-title">{c.title}</div>
+                {#if c.description}<div class="course-desc">{c.description}</div>{/if}
+                <div class="course-meta">
+                  <span>📦 {formatSize(c.file_size)}</span>
+                  <span>👤 {c.teacher_name||'Enseignant'}</span>
+                  <span>{c.file_type?.replace('.','').toUpperCase()}</span>
+                </div>
+                <div class="course-actions">
+                  <button class="btn btn-success" style="flex:1" on:click={()=>viewCourse(c)}>👁️ Lire</button>
+                  <button class="btn" on:click={()=>downloadCourse(c)}>⬇️</button>
+                  <button class="btn" on:click={()=>openEditCourse(c)}>✏️</button>
+                  <button class="btn btn-danger" on:click={()=>deleteCourse(c.id)}>🗑️</button>
+                </div>
+
+                <!-- Bouton Indexer -->
+                <button
+                  class="btn-index {indexedCourses[c.id]?'indexed':''}"
+                  on:click={()=>indexCourse(c.id)}
+                  disabled={indexingCourseId===c.id||indexedCourses[c.id]}
+                >
+                  {#if indexingCourseId===c.id}
+                    <div class="spinner" style="width:12px;height:12px;border-width:2px"></div> Indexation en cours...
+                  {:else if indexedCourses[c.id]}
+                    🤖 Cours indexé pour le chatbot IA
+                  {:else}
+                    🤖 Indexer pour le chatbot IA
+                  {/if}
+                </button>
+
+                <!-- Bouton Générer QCM -->
+                {#if indexedCourses[c.id]}
+                  <button
+                    class="btn btn-quiz"
+                    style="width:100%;justify-content:center"
+                    on:click={()=>generateQuiz(c)}
+                    disabled={generatingQuiz[c.id]}
+                  >
+                    {#if generatingQuiz[c.id]}
+                      <div class="spinner" style="width:12px;height:12px;border-width:2px;border-top-color:#7c3aed"></div> Génération QCM...
+                    {:else}
+                      📝 Générer un QCM
+                    {/if}
+                  </button>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
+
+      {:else if activeTab==='students'}
+        {#if students.length===0}
+          <div class="empty"><div style="font-size:48px">👥</div><p style="margin-top:12px">Aucun étudiant inscrit.</p></div>
+        {:else}
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Nom</th><th>Email</th><th>Rôle</th></tr></thead>
+              <tbody>
+                {#each students as s}
+                  <tr>
+                    <td>
+                      <div style="display:flex;align-items:center;gap:10px">
+                        <div style="width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,#4f46e5,#0ea5e9);display:flex;align-items:center;justify-content:center;color:white;font-weight:700;font-size:12px;flex-shrink:0">
+                          {(s.name||'?')[0].toUpperCase()}
+                        </div>
+                        {s.name}
+                      </div>
+                    </td>
+                    <td>{s.email}</td>
+                    <td><span class="badge badge-active">{s.role}</span></td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {/if}
+
+      {:else if activeTab==='quizzes'}
+        <div class="quiz-panel">
+          <h3 style="font-size:18px;font-weight:700;color:#1e293b;margin-bottom:16px">📋 Gestion des Quiz</h3>
+          
+          {#if !selectedQuizForSubmissions}
+            {#if teacherQuizList.length === 0}
+              <div class="empty"><div style="font-size:48px">📝</div><p style="margin-top:12px">Aucun quiz. Générez un QCM depuis l'onglet Cours !</p></div>
+            {:else}
+              <div class="quiz-list">
+                {#each teacherQuizList as quiz}
+                  <div class="quiz-row">
+                    <div style="flex:1">
+                      <div style="font-weight:600;color:#1e293b">{quiz.title}</div>
+                      <div style="font-size:12px;color:#94a3b8;margin-top:2px">{quiz.course_title || 'Sans cours'} • {quiz.questions_count || 0} questions</div>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:10px">
+                      <span class="badge {quiz.status==='published'?'badge-indexed':'badge-pending'}">
+                        {quiz.status === 'published' ? '🟢 Publié' : '🔴 Brouillon'}
+                      </span>
+                      {#if quiz.status !== 'published'}
+                        <button class="btn-publish" on:click={() => publishQuiz(quiz.id)}>Publier</button>
+                      {/if}
+                      <button class="btn-view" on:click={() => viewQuizSubmissions(quiz.id)}>Voir soumissions</button>
+                    </div>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          {:else}
+            <button class="btn-back" on:click={() => selectedQuizForSubmissions = null}>← Retour aux quiz</button>
+            <h4 style="font-size:16px;font-weight:600;color:#1e293b;margin-bottom:12px">Soumissions</h4>
+            
+            {#if quizSubmissions.length === 0}
+              <div class="empty"><div style="font-size:48px">📭</div><p style="margin-top:12px">Aucune soumission pour ce quiz.</p></div>
+            {:else}
+              <div class="table-wrap">
+                <table class="submissions-table">
+                  <thead>
+                    <tr>
+                      <th>Élève</th>
+                      <th>Score</th>
+                      <th>%</th>
+                      <th>Note IA /20</th>
+                      <th>Feedback</th>
+                      <th>Statut</th>
+                      <th>Modifier note</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {#each quizSubmissions as sub}
+                      <tr>
+                        <td>{sub.student_name}</td>
+                        <td>{sub.score}/{sub.total}</td>
+                        <td>{sub.score_pct}%</td>
+                        <td>{sub.ai_note ?? '⏳'}</td>
+                        <td class="feedback-cell" title={sub.ai_feedback}>
+                          {sub.ai_feedback ? sub.ai_feedback.substring(0, 50) + '...' : 'En attente'}
+                        </td>
+                        <td><span class="status-badge {sub.status}">{sub.status}</span></td>
+                        <td>
+                          <input 
+                            type="number" 
+                            min="0" 
+                            max="20" 
+                            value={sub.ai_note || ''} 
+                            on:change={(e) => updateQuizNote(sub.id, e.target.value, selectedQuizForSubmissions)}
+                          />
+                        </td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </div>
+            {/if}
+          {/if}
+        </div>
+
+      {:else if activeTab==='classroom'}
+        {#if classroom}
+          <div class="code-display">
+            <div class="code-label">Code de classe</div>
+            <div class="code-value">{classroom.class_code}</div>
+            <div class="code-hint">Partagez ce code avec vos étudiants.</div>
+            <div class="code-stats">
+              <div class="code-stat"><div class="code-stat-val">{classroom.student_count||0}</div><div class="code-stat-lbl">Étudiants</div></div>
+              <div class="code-stat"><div class="code-stat-val">{assignments.length}</div><div class="code-stat-lbl">Devoirs</div></div>
+            </div>
+          </div>
+        {:else}
+          <div class="empty">🏫 Impossible de charger la classe.</div>
+        {/if}
+      {/if}
+    </div>
+  </div>
+</div>
+
+<!-- Modal Devoirs -->
+{#if showModal}
+  <div class="overlay" on:click|self={()=>showModal=false}>
+    <div class="modal">
+      <div class="modal-title">{modalMode==='create'?'➕ Nouveau devoir':'✏️ Modifier le devoir'}</div>
+      <div class="fg"><label>Titre *</label><input bind:value={form.title} placeholder="Titre du devoir"/></div>
+      <div class="fg"><label>Description</label><textarea bind:value={form.description} placeholder="Instructions..."></textarea></div>
+      <div class="fg"><label>Cours / Matière</label><input bind:value={form.course} placeholder="Ex: Mathématiques"/></div>
+      <div class="frow">
+        <div class="fg"><label>Date limite *</label><input type="date" bind:value={form.due_date}/></div>
+        <div class="fg"><label>Heure limite</label><input type="time" bind:value={form.due_time}/></div>
+      </div>
+      <div class="fg"><label>Points</label><input type="number" bind:value={form.points} min="0"/></div>
+      <div class="mactions">
+        <button class="btn" on:click={()=>showModal=false}>Annuler</button>
+        <button class="btn-primary" on:click={submitForm}>{modalMode==='create'?'Créer':'Enregistrer'}</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Modal Cours -->
+{#if showCourseModal}
+  <div class="overlay" on:click|self={()=>showCourseModal=false}>
+    <div class="modal">
+      <div class="modal-title">{modalMode==='create'?'📚 Nouveau cours':'✏️ Modifier le cours'}</div>
+      <div class="fg"><label>Titre *</label><input bind:value={courseForm.title} placeholder="Titre du cours"/></div>
+      <div class="fg"><label>Description</label><textarea bind:value={courseForm.description} placeholder="Objectifs..."></textarea></div>
+      <div class="fg">
+        <label>Module *</label>
+        <select bind:value={courseForm.module}>{#each MODULES as m}<option value={m}>{m}</option>{/each}</select>
+      </div>
+      <div class="fg">
+        <label>Fichier {modalMode==='create'?'*':'(optionnel)'}</label>
+        <label class="upload-zone {selectedFile?'has-file':''}" for="file-input">
+          {#if selectedFile}
+            <div>✅ {selectedFile.name}</div>
+            <div style="font-size:12px;color:#94a3b8;margin-top:4px">{formatSize(selectedFile.size)}</div>
+          {:else}
+            <div>📎 Cliquez pour sélectionner un fichier</div>
+            <div style="font-size:12px;color:#94a3b8;margin-top:4px">PDF, Word, PowerPoint, TXT</div>
+          {/if}
+        </label>
+        <input id="file-input" class="upload-input" type="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.txt" on:change={handleFileSelect}/>
+      </div>
+      <div class="mactions">
+        <button class="btn" on:click={()=>showCourseModal=false}>Annuler</button>
+        <button class="btn-primary" on:click={submitCourseForm} disabled={uploading}>
+          {uploading?'⏳ Envoi...':modalMode==='create'?'Créer le cours':'Enregistrer'}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Modal PDF Viewer -->
+{#if showCourseViewer && viewingCourse}
+  <div class="overlay" on:click|self={()=>showCourseViewer=false}>
+    <div class="modal modal-lg">
+      <div class="viewer-header">
+        <div>
+          <div class="viewer-title">{fileIcon(viewingCourse.file_type)} {viewingCourse.title}</div>
+          <div style="font-size:12px;color:#94a3b8">{viewingCourse.module}</div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn" on:click={()=>downloadCourse(viewingCourse)}>⬇️ Télécharger</button>
+          <button class="btn btn-danger" on:click={()=>showCourseViewer=false}>✕ Fermer</button>
+        </div>
+      </div>
+      <div class="viewer-body">
+        {#if viewingCourse.file_type==='.pdf'}
+          <iframe class="pdf-frame" src="{getCourseFileUrl(viewingCourse)}" title={viewingCourse.title}></iframe>
+        {:else}
+          <div class="empty" style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center">
+            <div style="font-size:3rem">{fileIcon(viewingCourse.file_type)}</div>
+            <p style="margin-top:12px;color:#94a3b8">Aperçu non disponible.</p>
+            <button class="btn-primary" style="margin-top:12px" on:click={()=>downloadCourse(viewingCourse)}>⬇️ Télécharger</button>
+          </div>
+        {/if}
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Modal QCM -->
+{#if showQuizModal && currentQuiz}
+  <div class="overlay" on:click|self={()=>showQuizModal=false}>
+    <div class="modal" style="max-width:700px;max-height:90vh;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+        <div>
+          <div class="modal-title" style="margin:0">📝 QCM — {currentQuiz.courseTitle}</div>
+          <div style="font-size:13px;color:#94a3b8;margin-top:4px">{currentQuiz.questions?.length||0} questions générées par IA</div>
+        </div>
+        <button class="btn btn-danger" on:click={()=>showQuizModal=false}>✕</button>
+      </div>
+
+      {#if currentQuiz.questions && currentQuiz.questions.length > 0}
+        {#each currentQuiz.questions as q, i}
+          <div class="quiz-question">
+            <div class="quiz-q-text">{i+1}. {q.question}</div>
+            {#each q.options as opt}
+              <div class="quiz-option {opt.startsWith(q.correct)?'correct':''}">
+                {opt} {opt.startsWith(q.correct)?'✅':''}
+              </div>
+            {/each}
+            <div class="quiz-explanation">💡 {q.explanation}</div>
+          </div>
+        {/each}
+
+                <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:20px">
+          <button class="btn" on:click={()=>showQuizModal=false}>Fermer</button>
+          <button class="btn-primary" on:click={()=>saveAndPublishQuiz(currentQuiz)}>🚀 Publier le quiz</button>
+        </div>
+      {:else}
+        <div class="empty">
+          <div style="font-size:48px">❓</div>
+          <p style="margin-top:12px">Aucune question générée. Essayez avec un cours plus détaillé.</p>
+        </div>
+      {/if}
+    </div>
+  </div>
+{/if}
+
+{#if successMsg}<div class="toast">{successMsg}</div>{/if}
 
 <style>
   :global(body) { margin: 0; padding: 0; }
@@ -515,6 +971,37 @@ Réponds UNIQUEMENT avec le JSON, sans texte avant ou après.`,
   .quiz-option.correct { background: #f0fdf4 !important; color: #059669 !important; font-weight: 600; border: 1px solid #6ee7b7; }
   .quiz-explanation { font-size: 12px; color: #64748b !important; margin-top: 8px; font-style: italic; padding: 6px 10px; background: #fffbeb !important; border-radius: 6px; border-left: 3px solid #f59e0b; }
 
+  /* Quiz Panel (Teacher) */
+  .quiz-panel { padding: 0; }
+  .quiz-list { display: flex; flex-direction: column; gap: 0.75rem; }
+  .quiz-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 1rem; border: 1px solid #e2e8f0; border-radius: 10px;
+    background: #ffffff !important; transition: all 0.15s;
+  }
+  .quiz-row:hover { box-shadow: 0 3px 10px rgba(0,0,0,0.07); border-color: #c7d2fe; }
+  .btn-publish {
+    background: #22c55e !important; color: white !important; border: none;
+    padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;
+  }
+  .btn-view {
+    background: #4f46e5 !important; color: white !important; border: none;
+    padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;
+  }
+  .btn-back {
+    background: #6b7280 !important; color: white !important; border: none;
+    padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 13px;
+    margin-bottom: 1rem; display: inline-flex; align-items: center; gap: 6px;
+  }
+  .submissions-table { width: 100%; border-collapse: collapse; }
+  .submissions-table th, .submissions-table td { padding: 0.75rem; border: 1px solid #e5e7eb; text-align: left; font-size: 13px; }
+  .submissions-table th { background: #f3f4f6; font-weight: 600; }
+  .feedback-cell { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .status-badge { padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+  .status-badge.submitted { background: #fef3c7; color: #92400e; }
+  .status-badge.corrected { background: #dbeafe; color: #1e40af; }
+  .submissions-table input[type="number"] { width: 60px; padding: 4px; border: 1px solid #d1d5db; border-radius: 4px; }
+
   /* Toast */
   .toast { position: fixed; bottom: 20px; right: 20px; z-index: 300; background: #1e293b !important; color: white !important; padding: 12px 18px; border-radius: 10px; font-size: 13px; font-weight: 500; box-shadow: 0 8px 24px rgba(0,0,0,0.15); animation: slideIn 0.3s ease; }
   @keyframes slideIn { from { opacity:0; transform: translateY(10px); } to { opacity:1; transform: translateY(0); } }
@@ -531,341 +1018,3 @@ Réponds UNIQUEMENT avec le JSON, sans texte avant ou après.`,
     .courses-grid { grid-template-columns: 1fr; }
   }
 </style>
-
-<div class="layout">
-
-  <!-- Sidebar -->
-  <aside class="sidebar">
-    <div class="sidebar-logo">Open<span>TutorAI</span></div>
-    {#if $user}
-      <div class="sidebar-user">
-        <div class="user-avatar">{($user.name||'P')[0].toUpperCase()}</div>
-        <div>
-          <div class="user-name">{$user.name}</div>
-          <div class="user-role">Enseignant</div>
-        </div>
-      </div>
-    {/if}
-    <nav class="nav">
-      {#each [
-        { id:'assignments', icon:'📋', label:'Devoirs',   count: assignments.length },
-        { id:'courses',     icon:'📚', label:'Cours',     count: courses.length },
-        { id:'students',    icon:'👥', label:'Étudiants', count: students.length },
-        { id:'classroom',   icon:'🏫', label:'Ma Classe', count: null },
-      ] as tab}
-        <div class="nav-item {activeTab===tab.id?'active':''}" on:click={() => activeTab=tab.id} role="button" tabindex="0">
-          <span>{tab.icon}</span><span>{tab.label}</span>
-          {#if tab.count !== null && tab.count > 0}<span class="nav-badge">{tab.count}</span>{/if}
-        </div>
-      {/each}
-    </nav>
-  </aside>
-
-  <!-- Main -->
-  <div class="main">
-    <div class="topbar">
-      <div>
-        <div class="page-title">
-          {activeTab==='assignments'?'📋 Devoirs':activeTab==='courses'?'📚 Cours':activeTab==='students'?'👥 Étudiants':'🏫 Ma Classe'}
-        </div>
-        <div class="page-sub">
-          {activeTab==='assignments'?`${assignments.length} devoir(s)`:activeTab==='courses'?`${courses.length} cours`:activeTab==='students'?`${students.length} étudiant(s)`:classroom?`Code : ${classroom.class_code}`:''}
-        </div>
-      </div>
-      <div>
-        {#if activeTab==='assignments'}<button class="btn-primary" on:click={openCreate}>+ Nouveau devoir</button>
-        {:else if activeTab==='courses'}<button class="btn-primary" on:click={openCreateCourse}>+ Nouveau cours</button>
-        {:else if activeTab==='classroom'}<button class="btn" on:click={regenerateCode}>🔄 Nouveau code</button>
-        {/if}
-      </div>
-    </div>
-
-    <div class="content">
-      {#if loading}
-        <div class="spin"><div class="spinner"></div> Chargement...</div>
-
-      {:else if activeTab==='assignments'}
-        <div class="stats">
-          {#each [
-            {icon:'📋',bg:'#eef2ff',val:assignments.length,lbl:'Total'},
-            {icon:'✅',bg:'#f0fdf4',val:assignments.filter(a=>a.status==='active').length,lbl:'Actifs'},
-            {icon:'📨',bg:'#fff7ed',val:assignments.reduce((s,a)=>s+(a.submission_count||0),0),lbl:'Soumissions'},
-            {icon:'👥',bg:'#f0f9ff',val:students.length,lbl:'Étudiants'},
-          ] as s}
-            <div class="stat-card">
-              <div class="stat-icon" style="background:{s.bg}">{s.icon}</div>
-              <div><div class="stat-val">{s.val}</div><div class="stat-lbl">{s.lbl}</div></div>
-            </div>
-          {/each}
-        </div>
-        {#if assignments.length===0}
-          <div class="empty"><div style="font-size:48px">📋</div><p style="margin-top:12px">Aucun devoir. Créez votre premier devoir !</p></div>
-        {:else}
-          {#each assignments as a}
-            {@const d=formatDeadline(a.due_date)}
-            <div class="devoir-card">
-              <div class="devoir-icon">📋</div>
-              <div class="devoir-info">
-                <div class="devoir-title">{a.title}</div>
-                <div class="devoir-meta">
-                  {#if a.course}<span>📚 {a.course}</span>{/if}
-                  <span>📅 {a.due_date} à {a.due_time}</span>
-                  <span>⭐ {a.points} pts</span>
-                  <span>📨 {a.submission_count||0} soumissions</span>
-                </div>
-              </div>
-              <span class="badge" style="background:{d.bg};color:{d.color}">{d.label}</span>
-              <span class="badge {a.status==='active'?'badge-active':''}">{a.status==='active'?'Actif':'Fermé'}</span>
-              <div style="display:flex;gap:6px">
-                <button class="btn" on:click={() => openEdit(a)}>✏️</button>
-                <button class="btn btn-danger" on:click={() => deleteAssignment(a.id)}>🗑️</button>
-              </div>
-            </div>
-          {/each}
-        {/if}
-
-      {:else if activeTab==='courses'}
-        {#if courses.length>0}
-          <div class="filter-bar">
-            <button class="filter-btn {filterModule==='all'?'active':''}" on:click={()=>filterModule='all'}>Tous ({courses.length})</button>
-            {#each uniqueModules as m}
-              <button class="filter-btn {filterModule===m?'active':''}" on:click={()=>filterModule=m}>{m}</button>
-            {/each}
-          </div>
-        {/if}
-        {#if filteredCourses.length===0}
-          <div class="empty"><div style="font-size:48px">📚</div><p style="margin-top:12px">Aucun cours. Créez votre premier cours !</p></div>
-        {:else}
-          <div class="courses-grid">
-            {#each filteredCourses as c}
-              <div class="course-card">
-                <div style="display:flex;align-items:flex-start;justify-content:space-between">
-                  <span style="font-size:2.2rem">{fileIcon(c.file_type)}</span>
-                  <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px">
-                    <span class="badge badge-module">{c.module}</span>
-                    {#if indexedCourses[c.id]}
-                      <span class="badge badge-indexed">🤖 Indexé</span>
-                    {:else}
-                      <span class="badge badge-pending">⚠️ Non indexé</span>
-                    {/if}
-                  </div>
-                </div>
-                <div class="course-title">{c.title}</div>
-                {#if c.description}<div class="course-desc">{c.description}</div>{/if}
-                <div class="course-meta">
-                  <span>📦 {formatSize(c.file_size)}</span>
-                  <span>👤 {c.teacher_name||'Enseignant'}</span>
-                  <span>{c.file_type?.replace('.','').toUpperCase()}</span>
-                </div>
-                <div class="course-actions">
-                  <button class="btn btn-success" style="flex:1" on:click={()=>viewCourse(c)}>👁️ Lire</button>
-                  <button class="btn" on:click={()=>downloadCourse(c)}>⬇️</button>
-                  <button class="btn" on:click={()=>openEditCourse(c)}>✏️</button>
-                  <button class="btn btn-danger" on:click={()=>deleteCourse(c.id)}>🗑️</button>
-                </div>
-
-                <!-- Bouton Indexer -->
-                <button
-                  class="btn-index {indexedCourses[c.id]?'indexed':''}"
-                  on:click={()=>indexCourse(c.id)}
-                  disabled={indexingCourseId===c.id||indexedCourses[c.id]}
-                >
-                  {#if indexingCourseId===c.id}
-                    <div class="spinner" style="width:12px;height:12px;border-width:2px"></div> Indexation en cours...
-                  {:else if indexedCourses[c.id]}
-                    🤖 Cours indexé pour le chatbot IA
-                  {:else}
-                    🤖 Indexer pour le chatbot IA
-                  {/if}
-                </button>
-
-                <!-- Bouton Générer QCM -->
-                {#if indexedCourses[c.id]}
-                  <button
-                    class="btn btn-quiz"
-                    style="width:100%;justify-content:center"
-                    on:click={()=>generateQuiz(c)}
-                    disabled={generatingQuiz[c.id]}
-                  >
-                    {#if generatingQuiz[c.id]}
-                      <div class="spinner" style="width:12px;height:12px;border-width:2px;border-top-color:#7c3aed"></div> Génération QCM...
-                    {:else}
-                      📝 Générer un QCM
-                    {/if}
-                  </button>
-                {/if}
-              </div>
-            {/each}
-          </div>
-        {/if}
-
-      {:else if activeTab==='students'}
-        {#if students.length===0}
-          <div class="empty"><div style="font-size:48px">👥</div><p style="margin-top:12px">Aucun étudiant inscrit.</p></div>
-        {:else}
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>Nom</th><th>Email</th><th>Rôle</th></tr></thead>
-              <tbody>
-                {#each students as s}
-                  <tr>
-                    <td>
-                      <div style="display:flex;align-items:center;gap:10px">
-                        <div style="width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,#4f46e5,#0ea5e9);display:flex;align-items:center;justify-content:center;color:white;font-weight:700;font-size:12px;flex-shrink:0">
-                          {(s.name||'?')[0].toUpperCase()}
-                        </div>
-                        {s.name}
-                      </div>
-                    </td>
-                    <td>{s.email}</td>
-                    <td><span class="badge badge-active">{s.role}</span></td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          </div>
-        {/if}
-
-      {:else if activeTab==='classroom'}
-        {#if classroom}
-          <div class="code-display">
-            <div class="code-label">Code de classe</div>
-            <div class="code-value">{classroom.class_code}</div>
-            <div class="code-hint">Partagez ce code avec vos étudiants.</div>
-            <div class="code-stats">
-              <div class="code-stat"><div class="code-stat-val">{classroom.student_count||0}</div><div class="code-stat-lbl">Étudiants</div></div>
-              <div class="code-stat"><div class="code-stat-val">{assignments.length}</div><div class="code-stat-lbl">Devoirs</div></div>
-            </div>
-          </div>
-        {:else}
-          <div class="empty">🏫 Impossible de charger la classe.</div>
-        {/if}
-      {/if}
-    </div>
-  </div>
-</div>
-
-<!-- Modal Devoirs -->
-{#if showModal}
-  <div class="overlay" on:click|self={()=>showModal=false}>
-    <div class="modal">
-      <div class="modal-title">{modalMode==='create'?'➕ Nouveau devoir':'✏️ Modifier le devoir'}</div>
-      <div class="fg"><label>Titre *</label><input bind:value={form.title} placeholder="Titre du devoir"/></div>
-      <div class="fg"><label>Description</label><textarea bind:value={form.description} placeholder="Instructions..."></textarea></div>
-      <div class="fg"><label>Cours / Matière</label><input bind:value={form.course} placeholder="Ex: Mathématiques"/></div>
-      <div class="frow">
-        <div class="fg"><label>Date limite *</label><input type="date" bind:value={form.due_date}/></div>
-        <div class="fg"><label>Heure limite</label><input type="time" bind:value={form.due_time}/></div>
-      </div>
-      <div class="fg"><label>Points</label><input type="number" bind:value={form.points} min="0"/></div>
-      <div class="mactions">
-        <button class="btn" on:click={()=>showModal=false}>Annuler</button>
-        <button class="btn-primary" on:click={submitForm}>{modalMode==='create'?'Créer':'Enregistrer'}</button>
-      </div>
-    </div>
-  </div>
-{/if}
-
-<!-- Modal Cours -->
-{#if showCourseModal}
-  <div class="overlay" on:click|self={()=>showCourseModal=false}>
-    <div class="modal">
-      <div class="modal-title">{modalMode==='create'?'📚 Nouveau cours':'✏️ Modifier le cours'}</div>
-      <div class="fg"><label>Titre *</label><input bind:value={courseForm.title} placeholder="Titre du cours"/></div>
-      <div class="fg"><label>Description</label><textarea bind:value={courseForm.description} placeholder="Objectifs..."></textarea></div>
-      <div class="fg">
-        <label>Module *</label>
-        <select bind:value={courseForm.module}>{#each MODULES as m}<option value={m}>{m}</option>{/each}</select>
-      </div>
-      <div class="fg">
-        <label>Fichier {modalMode==='create'?'*':'(optionnel)'}</label>
-        <label class="upload-zone {selectedFile?'has-file':''}" for="file-input">
-          {#if selectedFile}
-            <div>✅ {selectedFile.name}</div>
-            <div style="font-size:12px;color:#94a3b8;margin-top:4px">{formatSize(selectedFile.size)}</div>
-          {:else}
-            <div>📎 Cliquez pour sélectionner un fichier</div>
-            <div style="font-size:12px;color:#94a3b8;margin-top:4px">PDF, Word, PowerPoint, TXT</div>
-          {/if}
-        </label>
-        <input id="file-input" class="upload-input" type="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.txt" on:change={handleFileSelect}/>
-      </div>
-      <div class="mactions">
-        <button class="btn" on:click={()=>showCourseModal=false}>Annuler</button>
-        <button class="btn-primary" on:click={submitCourseForm} disabled={uploading}>
-          {uploading?'⏳ Envoi...':modalMode==='create'?'Créer le cours':'Enregistrer'}
-        </button>
-      </div>
-    </div>
-  </div>
-{/if}
-
-<!-- Modal PDF Viewer -->
-{#if showCourseViewer && viewingCourse}
-  <div class="overlay" on:click|self={()=>showCourseViewer=false}>
-    <div class="modal modal-lg">
-      <div class="viewer-header">
-        <div>
-          <div class="viewer-title">{fileIcon(viewingCourse.file_type)} {viewingCourse.title}</div>
-          <div style="font-size:12px;color:#94a3b8">{viewingCourse.module}</div>
-        </div>
-        <div style="display:flex;gap:8px">
-          <button class="btn" on:click={()=>downloadCourse(viewingCourse)}>⬇️ Télécharger</button>
-          <button class="btn btn-danger" on:click={()=>showCourseViewer=false}>✕ Fermer</button>
-        </div>
-      </div>
-      <div class="viewer-body">
-        {#if viewingCourse.file_type==='.pdf'}
-          <iframe class="pdf-frame" src="{getCourseFileUrl(viewingCourse)}" title={viewingCourse.title}></iframe>
-        {:else}
-          <div class="empty" style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center">
-            <div style="font-size:3rem">{fileIcon(viewingCourse.file_type)}</div>
-            <p style="margin-top:12px;color:#94a3b8">Aperçu non disponible.</p>
-            <button class="btn-primary" style="margin-top:12px" on:click={()=>downloadCourse(viewingCourse)}>⬇️ Télécharger</button>
-          </div>
-        {/if}
-      </div>
-    </div>
-  </div>
-{/if}
-
-<!-- Modal QCM -->
-{#if showQuizModal && currentQuiz}
-  <div class="overlay" on:click|self={()=>showQuizModal=false}>
-    <div class="modal" style="max-width:700px;max-height:90vh;overflow-y:auto">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
-        <div>
-          <div class="modal-title" style="margin:0">📝 QCM — {currentQuiz.courseTitle}</div>
-          <div style="font-size:13px;color:#94a3b8;margin-top:4px">{currentQuiz.questions?.length||0} questions générées par IA</div>
-        </div>
-        <button class="btn btn-danger" on:click={()=>showQuizModal=false}>✕</button>
-      </div>
-
-      {#if currentQuiz.questions && currentQuiz.questions.length > 0}
-        {#each currentQuiz.questions as q, i}
-          <div class="quiz-question">
-            <div class="quiz-q-text">{i+1}. {q.question}</div>
-            {#each q.options as opt}
-              <div class="quiz-option {opt.startsWith(q.correct)?'correct':''}">
-                {opt} {opt.startsWith(q.correct)?'✅':''}
-              </div>
-            {/each}
-            <div class="quiz-explanation">💡 {q.explanation}</div>
-          </div>
-        {/each}
-
-        <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:20px">
-          <button class="btn" on:click={()=>showQuizModal=false}>Fermer</button>
-          <button class="btn-primary" on:click={()=>exportQuizText(currentQuiz)}>⬇️ Exporter en .txt</button>
-        </div>
-      {:else}
-        <div class="empty">
-          <div style="font-size:48px">❓</div>
-          <p style="margin-top:12px">Aucune question générée. Essayez avec un cours plus détaillé.</p>
-        </div>
-      {/if}
-    </div>
-  </div>
-{/if}
-
-{#if successMsg}<div class="toast">{successMsg}</div>{/if}
