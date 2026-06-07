@@ -1,7 +1,6 @@
 <script lang="ts">
-	import Chat from '$lib/components/chat/Chat.svelte';
+	import Chat from '$lib/components/chat/chat.svelte';
 	import Help from '$lib/components/layout/Help.svelte';
 </script>
 
-<Help />
-<Chat />
+<Chat courseId="ID_DU_COURS_ACTUEL" />

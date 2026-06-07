@@ -7,20 +7,19 @@
 
 	import Sidebar from '$lib/components/student/elements/Sidebar.svelte';
 	import Navbar from '$lib/components/student/elements/Navbar.svelte';
-	import DemoModeBanner from '$lib/components/DemoModeBanner.svelte';
 
 	import { getModels, getVersionUpdates } from '$lib/apis';
-	import { config, user, settings, models, theme, isDemo, demoData, originalUserData, isFullscreenAvatar} from '$lib/stores';
-	import { generateDemoData } from '$lib/utils/mockData';
-	import { toast } from 'svelte-sonner';
+	import { config, user, settings, models, theme } from '$lib/stores';
 
 	const activePage = writable('dashboard');
 	let isSidebarOpen = true;
 	let username = '';
 
+	// Check if current page is the dashboard (no blue layout on dashboard)
+	$: isDashboardPage = $page.url.pathname === '/student/dashboard' || $page.url.pathname === '/student';
+
 	// Extract first name from user's full name
 	$: if ($user && $user.name) {
-		// Split the name and get the first part as the first name
 		username = $user.name.split(' ')[0];
 	}
 
@@ -53,51 +52,8 @@
 		localStorage.setItem('theme', newTheme);
 	}
 
-	function toggleDemoMode() {
-		if ($isDemo) {
-			// Exit demo mode
-			if ($originalUserData) {
-				user.set($originalUserData);
-				originalUserData.set(null);
-			}
-			demoData.set({
-				dashboard: null,
-				chats: [],
-				supports: [],
-				assignments: [],
-				courses: []
-			});
-			isDemo.set(false);
-			localStorage.removeItem('demoMode');
-			toast.success('Demo mode deactivated. Back to your real data.');
-		} else {
-			// Enter demo mode
-			originalUserData.set($user);
-			const mockData = generateDemoData();
-			demoData.set(mockData);
-			isDemo.set(true);
-			localStorage.setItem('demoMode', 'true');
-			toast.success('Demo mode activated. You\'re now exploring with sample data.');
-		}
-	}
-
 	onMount(async () => {
 		console.log('Student layout mounted');
-		
-		// Check if demo mode was previously active
-		const wasDemoMode = localStorage.getItem('demoMode') === 'true';
-		if (wasDemoMode && !$isDemo) {
-			console.log('Restoring demo mode from localStorage');
-			const mockData = generateDemoData();
-			originalUserData.set($user);
-			demoData.set(mockData);
-			isDemo.set(true);
-		} else if ($isDemo && $demoData.chats.length === 0) {
-			// Ensure demo data is loaded
-			const mockData = generateDemoData();
-			demoData.set(mockData);
-		}
-		
 		models.set(
 			await getModels(
 				localStorage.token,
@@ -145,66 +101,62 @@
 	});
 </script>
 
-<div
-	class="flex h-screen overflow-hidden bg-[#F4F7FE] dark:bg-gray-900 transition-colors duration-200 ease-in-out"
->
-	<!-- Sidebar with adaptive behavior - hide in fullscreen -->
-	{#if !$isFullscreenAvatar}
+<!-- Dashboard page: affiche juste le contenu sans sidebar/navbar bleue -->
+{#if isDashboardPage}
+	<slot />
+
+<!-- Autres pages student: affiche la sidebar et navbar bleues normalement -->
+{:else}
+	<div
+		class="flex h-screen overflow-hidden bg-[#F4F7FE] dark:bg-gray-900 transition-colors duration-200 ease-in-out"
+	>
+		<!-- Sidebar with adaptive behavior -->
 		<div class={`sidebar-container ${isSidebarOpen ? '' : 'collapsed'}`}>
 			<Sidebar {isSidebarOpen} {activePage} isDarkMode={currentIsDarkMode} />
 		</div>
-	{/if}
 
-	<!-- Main content area with navbar and slot -->
-	<div class="flex-1 flex flex-col overflow-hidden relative z-10 bg-[#F4F7FE] dark:bg-gray-900">
-		<!-- Hide navbar in fullscreen -->
-		{#if !$isFullscreenAvatar}
+		<!-- Main content area with navbar and slot -->
+		<div class="flex-1 flex flex-col overflow-hidden relative z-10 bg-[#F4F7FE] dark:bg-gray-900">
 			<Navbar
 				{username}
 				{toggleSidebar}
 				isDarkMode={currentIsDarkMode}
 				on:darkModeToggle={toggleDarkMode}
 			/>
-		{/if}
 
-		{#if $isDemo}
-			<DemoModeBanner on:toggle={toggleDemoMode} />
-		{/if}
-
-		<!-- Main content with proper scrolling -->
-		<div
-			class="flex-1 overflow-y-auto {$isFullscreenAvatar ? '' : 'p-4 md:p-6'} bg-[#F4F7FE] dark:bg-gray-900 text-gray-800 dark:text-gray-100"
-		>
-			<slot />
+			<!-- Main content with proper scrolling -->
+			<div
+				class="flex-1 overflow-y-auto p-4 md:p-6 bg-[#F4F7FE] dark:bg-gray-900 text-gray-800 dark:text-gray-100"
+			>
+				<slot />
+			</div>
 		</div>
-	</div>
 
-	<!-- Mobile sidebar overlay when open on mobile - lower z-index than content - hide in fullscreen -->
-	{#if isMobile && isSidebarOpen && !$isFullscreenAvatar}
-		<div
-			class="fixed inset-0 bg-black bg-opacity-70 z-5"
-			on:click={() => {
-				isSidebarOpen = false;
-			}}
-			aria-hidden="true"
-		></div>
-	{/if}
-</div>
+		<!-- Mobile sidebar overlay when open on mobile -->
+		{#if isMobile && isSidebarOpen}
+			<div
+				class="fixed inset-0 bg-black bg-opacity-70 z-5"
+				on:click={() => {
+					isSidebarOpen = false;
+				}}
+				aria-hidden="true"
+			></div>
+		{/if}
+	</div>
+{/if}
 
 <style>
-	/* Add this to ensure nested layouts work properly */
 	:global(.flex-1) {
-		min-height: 0; /* This is crucial for proper flex behavior */
+		min-height: 0;
 	}
 
-	/* Make sure content containers have proper layout */
 	:global(#chat-container) {
 		display: flex;
 		flex-direction: column;
 		height: 100%;
 		overflow: hidden;
 	}
-	/* Base styles */
+
 	:global(body, html) {
 		height: 100%;
 		margin: 0;
@@ -214,7 +166,6 @@
 			'Open Sans', 'Helvetica Neue', sans-serif;
 	}
 
-	/* Add dark mode transition for smoother theme switching */
 	:global(body),
 	:global(body *) {
 		transition:
@@ -222,7 +173,6 @@
 			color 0.3s ease;
 	}
 
-	/* Ensure proper contrast in dark mode */
 	:global(.dark) {
 		color-scheme: dark;
 	}
@@ -231,17 +181,15 @@
 		outline-color: #60a5fa;
 	}
 
-	/* Sidebar container responsive styles */
 	.sidebar-container {
 		transition: all 0.3s ease;
 		z-index: 20;
 	}
 
 	.sidebar-container.collapsed {
-		margin-left: -256px; /* Match sidebar width when closed */
+		margin-left: -256px;
 	}
 
-	/* Mobile styles */
 	@media (max-width: 767px) {
 		.sidebar-container {
 			position: fixed;
@@ -250,11 +198,10 @@
 		}
 
 		.sidebar-container.collapsed {
-			margin-left: -100%; /* Fully hide on mobile */
+			margin-left: -100%;
 		}
 	}
 
-	/* Tablet adjustments */
 	@media (min-width: 768px) and (max-width: 1023px) {
 		.sidebar-container:not(.collapsed) {
 			width: auto;
