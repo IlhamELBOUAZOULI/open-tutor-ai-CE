@@ -3,8 +3,23 @@ name: Backend CI
 on:
   push:
     branches: [main, dev]
+    paths:
+      - '**/*.py'
+      - 'requirements*.txt'
+      - 'pyproject.toml'
+      - '.github/workflows/ci-backend.yaml'
   pull_request:
     branches: [main, dev]
+    paths:
+      - '**/*.py'
+      - 'requirements*.txt'
+      - 'pyproject.toml'
+      - '.github/workflows/ci-backend.yaml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
 
